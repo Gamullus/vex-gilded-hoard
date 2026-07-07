@@ -16,6 +16,7 @@ import { generateItem } from './lib/generator';
 import type {
   ArmorSubtype,
   ClassName,
+  GeneratedItem,
   GeneratorInput,
   ItemCategory,
   Rarity,
@@ -26,6 +27,7 @@ import type {
   WeaponSubtype,
 } from './types';
 import { itemTemplates, rarityRules, spellDamageTable } from './data/tables';
+import { propertyCountByRarity } from './data/property-tables';
 import { customReferenceItems, type CustomReferenceItem } from './data/custom/deconstruction-references';
 import rawSrdDataset from './data/srd/srd-dataset.json';
 
@@ -59,7 +61,7 @@ const defaultInput: GeneratorInput = {
   weaponSubtype: 'Versatile',
   armorSubtype: 'Medium Armor',
   rarity: 'Uncommon',
-  theme: 'gilded necrotic dragon hoard',
+  theme: 'rooftop escape',
   classAttunement: 'Any',
   creatureStatblock: '',
   srdReference: '',
@@ -107,7 +109,7 @@ function themeFromText(...parts: Array<string | undefined>): string {
   if (text.includes('enchantment')) tags.push('charm');
   if (text.includes('transmutation')) tags.push('shifting');
 
-  return Array.from(new Set(tags)).slice(0, 4).join(' ') || 'srd-forged gilded';
+  return Array.from(new Set(tags)).slice(0, 4).join(' ') || 'borrowed talent';
 }
 
 function spellToEntry(spell: SrdSpell): ReferenceEntry {
@@ -139,7 +141,7 @@ function spellToEntry(spell: SrdSpell): ReferenceEntry {
     reference,
     themeHint: themeFromText(spell.name, spell.school, spell.damageType, spell.desc),
     categoryHint: 'Wand',
-    rarityHint: spell.level === undefined || spell.level <= 1 ? 'Common' : spell.level <= 3 ? 'Uncommon' : spell.level <= 5 ? 'Rare' : spell.level <= 8 ? 'Very Rare' : 'Legendary',
+    rarityHint: spell.level === undefined || spell.level <= 1 ? 'Common' : spell.level <= 2 ? 'Uncommon' : spell.level <= 3 ? 'Rare' : 'Very Rare',
     searchText: `${spell.name} ${summary} ${spell.desc ?? ''}`.toLowerCase(),
   };
 }
@@ -248,13 +250,11 @@ function makeReferenceEntries(dataset: SrdDataset): ReferenceEntry[] {
 
 function App() {
   const [input, setInput] = useState<GeneratorInput>(defaultInput);
-  const [rollId, setRollId] = useState(1);
+  const [generatedItem, setGeneratedItem] = useState<GeneratedItem | null>(null);
   const [referenceQuery, setReferenceQuery] = useState('');
   const [referenceKind, setReferenceKind] = useState<ReferenceKind>('All');
   const [selectedReferenceName, setSelectedReferenceName] = useState<string | null>(null);
 
-  const generated = useMemo(() => generateItem({ ...input, theme: `${input.theme} #${rollId}` }), [input, rollId]);
-  const cleanGenerated = useMemo(() => ({ ...generated, story: generated.story.replace(/ #\d+/g, '') }), [generated]);
   const referenceEntries = useMemo(() => makeReferenceEntries(srdDataset), []);
   const filteredReferenceEntries = useMemo(() => {
     const query = referenceQuery.trim().toLowerCase();
@@ -269,6 +269,10 @@ function App() {
 
   const update = <K extends keyof GeneratorInput>(key: K, value: GeneratorInput[K]) => {
     setInput((current) => ({ ...current, [key]: value }));
+  };
+
+  const createItem = () => {
+    setGeneratedItem(generateItem({ ...input, theme: `${input.theme} #${Date.now()}` }));
   };
 
   const useReferenceEntry = (entry: ReferenceEntry) => {
@@ -291,7 +295,8 @@ function App() {
   };
 
   const copyMarkdown = async () => {
-    const markdown = `### ${cleanGenerated.name}\n*${cleanGenerated.typeLine} (${cleanGenerated.requiresAttunement})*\n\n${cleanGenerated.appearance}\n\n${cleanGenerated.story}\n\n**Properties**\n${cleanGenerated.properties.map((property) => `- ${property}`).join('\n')}\n\n**Minor Property.** ${cleanGenerated.minorProperty}\n\n**Quirk.** ${cleanGenerated.quirk ?? 'None.'}\n\n${cleanGenerated.craftingHook ? `**Crafting.** ${cleanGenerated.craftingHook}\n\n` : ''}${input.srdReference ? `**Reference Used.** ${selectedReferenceName ?? 'Selected reference'}\n\n` : ''}**Balance Notes**\n${cleanGenerated.balanceNotes.map((note) => `- ${note}`).join('\n')}\n\n**Reference Template.** ${cleanGenerated.sourceTemplate}`;
+    if (!generatedItem) return;
+    const markdown = `### ${generatedItem.name}\n*${generatedItem.typeLine} (${generatedItem.requiresAttunement})*\n\n${generatedItem.appearance}\n\n${generatedItem.story}\n\n**Properties**\n${generatedItem.properties.map((property) => `- ${property}`).join('\n')}\n\n**Minor Property.** ${generatedItem.minorProperty}\n\n**Quirk.** ${generatedItem.quirk ?? 'None.'}\n\n${generatedItem.craftingHook ? `**Crafting.** ${generatedItem.craftingHook}\n\n` : ''}${input.srdReference ? `**Reference Used.** ${selectedReferenceName ?? 'Selected reference'}\n\n` : ''}**Balance Notes**\n${generatedItem.balanceNotes.map((note) => `- ${note}`).join('\n')}\n\n**Reference Template.** ${generatedItem.sourceTemplate}`;
     await navigator.clipboard.writeText(markdown);
   };
 
@@ -305,8 +310,7 @@ function App() {
           <p className="eyebrow">Kobold Apps · D&D 5e homebrew forge</p>
           <h1>Vex&apos;s Gilded Hoard</h1>
           <p className="hero-copy">
-            A magic item maker that rolls together rarity limits, class attunement, minor properties, spell-like ceilings,
-            SRD reference patterns, d100 item tables, magic ammunition, and monster-part crafting hooks into a table-ready item card.
+            Generate item mechanics from rarity budgets, property tables, SRD spell/item patterns, d100 references, and optional monster-part crafting. Nothing is rolled until you press Create.
           </p>
         </div>
       </section>
@@ -359,11 +363,11 @@ function App() {
           </label>
 
           <label>
-            Theme
+            Theme / Fame
             <input
               value={input.theme}
               onChange={(event) => update('theme', event.target.value)}
-              placeholder="necrotic sea, fey moon, storm dragon..."
+              placeholder="rooftop escape, fire duelist, impossible hunter..."
             />
           </label>
 
@@ -383,7 +387,7 @@ function App() {
                 checked={input.includeSpellLike}
                 onChange={(event) => update('includeSpellLike', event.target.checked)}
               />
-              Include spell-like property
+              Allow spell-like property rolls
             </label>
             <label className="checkbox-label">
               <input
@@ -391,7 +395,7 @@ function App() {
                 checked={input.allowDownside}
                 onChange={(event) => update('allowDownside', event.target.checked)}
               />
-              Allow downside / counterplay
+              Allow downside / counterplay notes
             </label>
           </div>
 
@@ -412,65 +416,74 @@ function App() {
             />
           </label>
 
-          <button className="primary-button" type="button" onClick={() => setRollId((id) => id + 1)}>
+          <button className="primary-button" type="button" onClick={createItem}>
             <Dice5 size={19} />
-            Create Magic Item
+            {generatedItem ? 'Regenerate With Same Parameters' : 'Create Magic Item'}
           </button>
         </form>
 
         <section className="result-stack">
           <article className="panel item-card glow-border">
-            <div className="item-card-header">
-              <div>
-                <p className="eyebrow">Generated item</p>
-                <h2>{cleanGenerated.name}</h2>
-                <p className="type-line">
-                  {cleanGenerated.typeLine} · {cleanGenerated.requiresAttunement}
+            {generatedItem ? (
+              <>
+                <div className="item-card-header">
+                  <div>
+                    <p className="eyebrow">Generated item</p>
+                    <h2>{generatedItem.name}</h2>
+                    <p className="type-line">
+                      {generatedItem.typeLine} · {generatedItem.requiresAttunement}
+                    </p>
+                  </div>
+                  <button className="icon-button" type="button" onClick={copyMarkdown} title="Copy as Markdown">
+                    <Copy size={18} />
+                  </button>
+                </div>
+
+                <p className="boxed-text">{generatedItem.appearance}</p>
+                <p>{generatedItem.story}</p>
+
+                <h3>Properties</h3>
+                <ul className="property-list">
+                  {generatedItem.properties.map((property) => (
+                    <li key={property}>{property}</li>
+                  ))}
+                </ul>
+
+                <div className="minor-grid">
+                  <div>
+                    <h3>Minor Property</h3>
+                    <p>{generatedItem.minorProperty}</p>
+                  </div>
+                  <div>
+                    <h3>Quirk</h3>
+                    <p>{generatedItem.quirk}</p>
+                  </div>
+                </div>
+
+                {generatedItem.craftingHook && (
+                  <div className="crafting-hook">
+                    <Sparkles size={18} />
+                    <p>{generatedItem.craftingHook}</p>
+                  </div>
+                )}
+
+                <h3>Balance Notes</h3>
+                <ul className="compact-list">
+                  {generatedItem.balanceNotes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+
+                <p className="template-note">
+                  <strong>Reference Template:</strong> {generatedItem.sourceTemplate}
                 </p>
-              </div>
-              <button className="icon-button" type="button" onClick={copyMarkdown} title="Copy as Markdown">
-                <Copy size={18} />
-              </button>
-            </div>
-
-            <p className="boxed-text">{cleanGenerated.appearance}</p>
-            <p>{cleanGenerated.story}</p>
-
-            <h3>Properties</h3>
-            <ul className="property-list">
-              {cleanGenerated.properties.map((property) => (
-                <li key={property}>{property}</li>
-              ))}
-            </ul>
-
-            <div className="minor-grid">
-              <div>
-                <h3>Minor Property</h3>
-                <p>{cleanGenerated.minorProperty}</p>
-              </div>
-              <div>
-                <h3>Quirk</h3>
-                <p>{cleanGenerated.quirk}</p>
-              </div>
-            </div>
-
-            {cleanGenerated.craftingHook && (
-              <div className="crafting-hook">
-                <Sparkles size={18} />
-                <p>{cleanGenerated.craftingHook}</p>
+              </>
+            ) : (
+              <div className="empty-srd">
+                <Dice5 size={22} />
+                <p>Choose the item parameters, optionally pick a reference source below, then press <strong>Create Magic Item</strong>. The app will not roll an item before that.</p>
               </div>
             )}
-
-            <h3>Balance Notes</h3>
-            <ul className="compact-list">
-              {cleanGenerated.balanceNotes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-
-            <p className="template-note">
-              <strong>Reference Template:</strong> {cleanGenerated.sourceTemplate}
-            </p>
           </article>
 
           <aside className="panel rules-panel">
@@ -481,16 +494,16 @@ function App() {
             <p>{rarityRules[input.rarity].guidance}</p>
             <dl>
               <div>
+                <dt>Properties</dt>
+                <dd>{propertyCountByRarity[input.rarity]} maximum properties</dd>
+              </div>
+              <div>
                 <dt>Max Spell</dt>
                 <dd>{rarityRules[input.rarity].maxSpellLevel}</dd>
               </div>
               <div>
                 <dt>Max Bonus</dt>
                 <dd>{rarityRules[input.rarity].maxBonus}</dd>
-              </div>
-              <div>
-                <dt>Charges</dt>
-                <dd>{rarityRules[input.rarity].chargeRange}</dd>
               </div>
             </dl>
           </aside>
@@ -508,12 +521,12 @@ function App() {
           </small>
         </div>
         <p className="srd-note">
-          This panel merges the local SRD snapshot with custom deconstruction tables. Run <code>npm run import:srd</code> once to fill SRD data; the screenshot item table and d100 ammunition table are already local.
+          Search a spell, SRD item, equipment entry, classic d100 item, or magic ammunition reference. Click <strong>Use as source</strong> to feed its tags and hints into the next roll.
         </p>
         <div className="srd-controls">
           <label>
             <span><Search size={15} /> Search references</span>
-            <input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="fire, sword, arrow, invisibility, wand..." />
+            <input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="feather fall, acrobatics, arrow, invisibility, wand..." />
           </label>
           <label>
             Data Type
@@ -553,6 +566,41 @@ function App() {
         </div>
         <div className="tables-grid">
           <div className="table-card">
+            <h3>Property Count</h3>
+            <table>
+              <thead>
+                <tr><th>Rarity</th><th>Max Properties</th></tr>
+              </thead>
+              <tbody>
+                {rarities.map((rarity) => (
+                  <tr key={rarity}><td>{rarity}</td><td>{propertyCountByRarity[rarity]}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="table-card">
+            <h3>Property Table Roll</h3>
+            <table>
+              <tbody>
+                <tr><td>1–2</td><td>Skill check property</td></tr>
+                <tr><td>3–4</td><td>1st-level spell property</td></tr>
+                <tr><td>5–6</td><td>2nd-level spell property</td></tr>
+                <tr><td>7–8</td><td>3rd-level spell property, if rarity allows</td></tr>
+                <tr><td>9–10</td><td>Non-spell item property</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="table-card">
+            <h3>Database Shape</h3>
+            <p>
+              Reference entries are stored as normalized spells, magic items, equipment, classic item patterns, and ammunition tricks. The generator rolls property tables first, then writes the previous-wielder story from the resulting abilities.
+            </p>
+            <div className="code-chip">
+              <WandSparkles size={16} />
+              rarity → property count → table → property
+            </div>
+          </div>
+          <div className="table-card">
             <h3>Spell Damage</h3>
             <table>
               <thead>
@@ -582,17 +630,6 @@ function App() {
                 </li>
               ))}
             </ul>
-          </div>
-          <div className="table-card">
-            <h3>Database Shape</h3>
-            <p>
-              Reference entries are stored as normalized spells, magic items, equipment, classic item patterns, and ammunition tricks.
-              The generator uses them as tags, templates, limits, and source patterns for new custom items.
-            </p>
-            <div className="code-chip">
-              <WandSparkles size={16} />
-              reference data → tags → template → unique output
-            </div>
           </div>
         </div>
       </section>

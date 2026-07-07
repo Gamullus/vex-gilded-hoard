@@ -56,8 +56,12 @@ function themeKeywords(theme: string): string[] {
   return ['shadow'];
 }
 
-function inferDamageType(theme: string, creature: CreatureProfile): string {
-  const merged = `${theme} ${creature.damageHints.join(' ')}`.toLowerCase();
+function referenceText(input: GeneratorInput): string {
+  return input.srdReference?.trim() ?? '';
+}
+
+function inferDamageType(theme: string, creature: CreatureProfile, reference = ''): string {
+  const merged = `${theme} ${creature.damageHints.join(' ')} ${reference}`.toLowerCase();
   if (merged.includes('fire')) return 'fire';
   if (merged.includes('cold') || merged.includes('frost') || merged.includes('ice')) return 'cold';
   if (merged.includes('lightning') || merged.includes('thunder') || merged.includes('storm')) return merged.includes('thunder') ? 'thunder' : 'lightning';
@@ -190,7 +194,11 @@ function makeStory(input: GeneratorInput, creature: CreatureProfile): string {
         'history',
       );
 
-  return `${maker} made this ${input.category.toLowerCase()} for a ${theme.toLowerCase()} problem that ordinary steel, prayer, or coin could not solve. ${history}`;
+  const ref = referenceText(input)
+    ? ' Its enchantment was patterned after an SRD reference entry, then twisted into a new hoard-worthy form.'
+    : '';
+
+  return `${maker} made this ${input.category.toLowerCase()} for a ${theme.toLowerCase()} problem that ordinary steel, prayer, or coin could not solve. ${history}${ref}`;
 }
 
 function makeAppearance(input: GeneratorInput, creature: CreatureProfile): string {
@@ -223,12 +231,19 @@ function fillTemplate(template: string, input: GeneratorInput, damageType: strin
     .replaceAll('{charges}', chargesByRarity[input.rarity]);
 }
 
+function summarizeSrdReference(reference: string): string | undefined {
+  if (!reference.trim()) return undefined;
+  const compact = reference.replace(/\s+/g, ' ').trim();
+  return compact.length > 220 ? `${compact.slice(0, 220)}…` : compact;
+}
+
 function makeProperties(input: GeneratorInput, creature: CreatureProfile): string[] {
   const seed = JSON.stringify({ ...input, creature });
-  const damageType = inferDamageType(input.theme, creature);
+  const ref = referenceText(input);
+  const damageType = inferDamageType(input.theme, creature, ref);
   const templates = categoryMechanics[input.category];
   const properties = [fillTemplate(pick(templates, seed, 'base-mechanic'), input, damageType)];
-  const keyword = themeKeywords(input.theme)[0];
+  const keyword = themeKeywords(`${input.theme} ${ref}`)[0];
   const themedEffects = themeEffects[keyword] ?? themeEffects.shadow;
   const rider = pick(themedEffects, seed, 'rider');
 
@@ -247,6 +262,11 @@ function makeProperties(input: GeneratorInput, creature: CreatureProfile): strin
   if (input.includeSpellLike) {
     const allowed = spellLikeEffects.filter((effect) => rarityOrder.indexOf(effect.minRarity) <= rarityOrder.indexOf(input.rarity));
     properties.push(pick(allowed, seed, 'spell-like').effect);
+  }
+
+  const srdSummary = summarizeSrdReference(ref);
+  if (srdSummary) {
+    properties.push(`SRD reference influence: ${srdSummary} Use it as inspiration for tags, range, damage type, save type, duration, or activation limits, not as a direct copy unless you want the item to reproduce that SRD effect.`);
   }
 
   if (creature.name) {
@@ -274,11 +294,15 @@ function makeBalanceNotes(input: GeneratorInput): string[] {
   const rule = rarityRules[input.rarity];
   const notes = [
     `${input.rarity} ceiling: ${rule.maxSpellLevel}; static bonus target: ${rule.maxBonus}.`,
-    `Keep the item to one main job: either improve something the character already does or grant one new trick.` ,
+    'Keep the item to one main job: either improve something the character already does or grant one new trick.',
   ];
 
   if (input.includeSpellLike) {
-    notes.push(`Spell-like effects should use charges, once-per-day limits, a save DC, line of sight, or another clear limiter.`);
+    notes.push('Spell-like effects should use charges, once-per-day limits, a save DC, line of sight, or another clear limiter.');
+  }
+
+  if (referenceText(input)) {
+    notes.push('The selected SRD entry is used as a comparison pattern for tags and limits. The generated item should still be checked against the rarity ceiling.');
   }
 
   if (shouldRequireAttunement(input)) {
@@ -292,6 +316,7 @@ export function generateItem(input: GeneratorInput): GeneratedItem {
   const creature = parseCreatureStatblock(input.creatureStatblock);
   const seed = JSON.stringify({ ...input, creature, timeBucket: Math.floor(Date.now() / 1000) });
   const sourceTemplate = pick(itemTemplates, seed, 'template');
+  const srd = summarizeSrdReference(referenceText(input));
 
   return {
     name: makeName(input, creature),
@@ -305,6 +330,8 @@ export function generateItem(input: GeneratorInput): GeneratedItem {
     quirk: pick(quirks, seed, 'quirk'),
     craftingHook: makeCraftingHook(creature, input),
     balanceNotes: makeBalanceNotes(input),
-    sourceTemplate: `${sourceTemplate.name}: ${sourceTemplate.safeSummary}`,
+    sourceTemplate: srd
+      ? `${sourceTemplate.name}: ${sourceTemplate.safeSummary} SRD pattern: ${srd}`
+      : `${sourceTemplate.name}: ${sourceTemplate.safeSummary}`,
   };
 }

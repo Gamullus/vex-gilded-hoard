@@ -26,6 +26,7 @@ import type {
   WeaponSubtype,
 } from './types';
 import { itemTemplates, rarityRules, spellDamageTable } from './data/tables';
+import { customReferenceItems, type CustomReferenceItem } from './data/custom/deconstruction-references';
 import rawSrdDataset from './data/srd/srd-dataset.json';
 
 const srdDataset = rawSrdDataset as SrdDataset;
@@ -36,11 +37,11 @@ const weaponSubtypes: WeaponSubtype[] = ['Melee', 'Ranged', 'Two-Handed', 'Versa
 const armorSubtypes: ArmorSubtype[] = ['Light Armor', 'Medium Armor', 'Heavy Armor', 'Shield'];
 const classNames: ClassName[] = ['Any', 'Artificer', 'Barbarian', 'Bard', 'Cleric', 'Druid', 'Fighter', 'Monk', 'Paladin', 'Ranger', 'Rogue', 'Sorcerer', 'Warlock', 'Wizard'];
 
-type SrdKind = 'All' | 'Spell' | 'Magic Item' | 'Equipment';
+type ReferenceKind = 'All' | 'Spell' | 'Magic Item' | 'Equipment' | 'Item Reference' | 'Magic Ammunition';
 
-type SrdEntry = {
+type ReferenceEntry = {
   id: string;
-  kind: Exclude<SrdKind, 'All'>;
+  kind: Exclude<ReferenceKind, 'All'>;
   name: string;
   badge: string;
   summary: string;
@@ -109,7 +110,7 @@ function themeFromText(...parts: Array<string | undefined>): string {
   return Array.from(new Set(tags)).slice(0, 4).join(' ') || 'srd-forged gilded';
 }
 
-function spellToEntry(spell: SrdSpell): SrdEntry {
+function spellToEntry(spell: SrdSpell): ReferenceEntry {
   const classes = spell.classes?.length ? ` · ${spell.classes.join(', ')}` : '';
   const damage = spell.damageType ? ` · ${spell.damageType}` : '';
   const save = spell.saveType ? ` · ${spell.saveType} save` : '';
@@ -143,7 +144,7 @@ function spellToEntry(spell: SrdSpell): SrdEntry {
   };
 }
 
-function magicItemToEntry(item: SrdMagicItem): SrdEntry {
+function magicItemToEntry(item: SrdMagicItem): ReferenceEntry {
   const summary = `${item.rarity ?? 'SRD'} ${item.category ?? 'magic item'}${item.variants?.length ? ` · variants: ${item.variants.join(', ')}` : ''}`;
   const reference = [
     `SRD Magic Item: ${item.name}`,
@@ -169,7 +170,7 @@ function magicItemToEntry(item: SrdMagicItem): SrdEntry {
   };
 }
 
-function equipmentToEntry(item: SrdEquipment): SrdEntry {
+function equipmentToEntry(item: SrdEquipment): ReferenceEntry {
   const isWeapon = item.category?.toLowerCase().includes('weapon') || Boolean(item.weaponCategory);
   const isArmor = item.category?.toLowerCase().includes('armor') || Boolean(item.armorCategory);
   const categoryHint: ItemCategory = isWeapon ? 'Weapon' : isArmor ? 'Armor' : 'Wondrous Item';
@@ -207,38 +208,71 @@ function equipmentToEntry(item: SrdEquipment): SrdEntry {
   };
 }
 
-function makeSrdEntries(dataset: SrdDataset): SrdEntry[] {
+function customReferenceToEntry(item: CustomReferenceItem): ReferenceEntry {
+  const summary = `${item.source} · ${item.summary}`;
+  const reference = [
+    `Custom Reference: ${item.name}`,
+    `Source: ${item.source}`,
+    `Roll: ${item.roll}`,
+    `Kind: ${item.kind}`,
+    item.tags.length ? `Tags: ${item.tags.join(', ')}` : undefined,
+    `Summary: ${item.summary}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    id: `custom:${item.id}`,
+    kind: item.kind,
+    name: item.name,
+    badge: item.kind === 'Magic Ammunition' ? `Ammo ${item.roll}` : `d100 ${item.roll}`,
+    summary,
+    reference,
+    themeHint: item.tags.join(' ') || themeFromText(item.name, item.summary),
+    categoryHint: item.categoryHint,
+    weaponSubtypeHint: item.weaponSubtypeHint,
+    armorSubtypeHint: item.armorSubtypeHint,
+    rarityHint: item.rarityHint,
+    searchText: `${item.name} ${summary} ${item.tags.join(' ')}`.toLowerCase(),
+  };
+}
+
+function makeReferenceEntries(dataset: SrdDataset): ReferenceEntry[] {
   return [
     ...dataset.spells.map(spellToEntry),
     ...dataset.magicItems.map(magicItemToEntry),
     ...dataset.equipment.map(equipmentToEntry),
+    ...customReferenceItems.map(customReferenceToEntry),
   ];
 }
 
 function App() {
   const [input, setInput] = useState<GeneratorInput>(defaultInput);
   const [rollId, setRollId] = useState(1);
-  const [srdQuery, setSrdQuery] = useState('');
-  const [srdKind, setSrdKind] = useState<SrdKind>('All');
-  const [selectedSrdName, setSelectedSrdName] = useState<string | null>(null);
+  const [referenceQuery, setReferenceQuery] = useState('');
+  const [referenceKind, setReferenceKind] = useState<ReferenceKind>('All');
+  const [selectedReferenceName, setSelectedReferenceName] = useState<string | null>(null);
 
   const generated = useMemo(() => generateItem({ ...input, theme: `${input.theme} #${rollId}` }), [input, rollId]);
   const cleanGenerated = useMemo(() => ({ ...generated, story: generated.story.replace(/ #\d+/g, '') }), [generated]);
-  const srdEntries = useMemo(() => makeSrdEntries(srdDataset), []);
-  const filteredSrdEntries = useMemo(() => {
-    const query = srdQuery.trim().toLowerCase();
-    return srdEntries
-      .filter((entry) => srdKind === 'All' || entry.kind === srdKind)
+  const referenceEntries = useMemo(() => makeReferenceEntries(srdDataset), []);
+  const filteredReferenceEntries = useMemo(() => {
+    const query = referenceQuery.trim().toLowerCase();
+    return referenceEntries
+      .filter((entry) => referenceKind === 'All' || entry.kind === referenceKind)
       .filter((entry) => !query || entry.searchText.includes(query))
-      .slice(0, 18);
-  }, [srdEntries, srdKind, srdQuery]);
+      .slice(0, 24);
+  }, [referenceEntries, referenceKind, referenceQuery]);
+
+  const customItemCount = customReferenceItems.filter((item) => item.kind === 'Item Reference').length;
+  const ammunitionCount = customReferenceItems.filter((item) => item.kind === 'Magic Ammunition').length;
 
   const update = <K extends keyof GeneratorInput>(key: K, value: GeneratorInput[K]) => {
     setInput((current) => ({ ...current, [key]: value }));
   };
 
-  const useSrdEntry = (entry: SrdEntry) => {
-    setSelectedSrdName(entry.name);
+  const useReferenceEntry = (entry: ReferenceEntry) => {
+    setSelectedReferenceName(entry.name);
     setInput((current) => ({
       ...current,
       theme: [entry.themeHint, current.theme].filter(Boolean).join(' '),
@@ -251,13 +285,13 @@ function App() {
     }));
   };
 
-  const clearSrdEntry = () => {
-    setSelectedSrdName(null);
+  const clearReferenceEntry = () => {
+    setSelectedReferenceName(null);
     update('srdReference', '');
   };
 
   const copyMarkdown = async () => {
-    const markdown = `### ${cleanGenerated.name}\n*${cleanGenerated.typeLine} (${cleanGenerated.requiresAttunement})*\n\n${cleanGenerated.appearance}\n\n${cleanGenerated.story}\n\n**Properties**\n${cleanGenerated.properties.map((property) => `- ${property}`).join('\n')}\n\n**Minor Property.** ${cleanGenerated.minorProperty}\n\n**Quirk.** ${cleanGenerated.quirk ?? 'None.'}\n\n${cleanGenerated.craftingHook ? `**Crafting.** ${cleanGenerated.craftingHook}\n\n` : ''}${input.srdReference ? `**SRD Reference Used.** ${selectedSrdName ?? 'Selected reference'}\n\n` : ''}**Balance Notes**\n${cleanGenerated.balanceNotes.map((note) => `- ${note}`).join('\n')}\n\n**Reference Template.** ${cleanGenerated.sourceTemplate}`;
+    const markdown = `### ${cleanGenerated.name}\n*${cleanGenerated.typeLine} (${cleanGenerated.requiresAttunement})*\n\n${cleanGenerated.appearance}\n\n${cleanGenerated.story}\n\n**Properties**\n${cleanGenerated.properties.map((property) => `- ${property}`).join('\n')}\n\n**Minor Property.** ${cleanGenerated.minorProperty}\n\n**Quirk.** ${cleanGenerated.quirk ?? 'None.'}\n\n${cleanGenerated.craftingHook ? `**Crafting.** ${cleanGenerated.craftingHook}\n\n` : ''}${input.srdReference ? `**Reference Used.** ${selectedReferenceName ?? 'Selected reference'}\n\n` : ''}**Balance Notes**\n${cleanGenerated.balanceNotes.map((note) => `- ${note}`).join('\n')}\n\n**Reference Template.** ${cleanGenerated.sourceTemplate}`;
     await navigator.clipboard.writeText(markdown);
   };
 
@@ -272,7 +306,7 @@ function App() {
           <h1>Vex&apos;s Gilded Hoard</h1>
           <p className="hero-copy">
             A magic item maker that rolls together rarity limits, class attunement, minor properties, spell-like ceilings,
-            SRD reference patterns, and monster-part crafting hooks into a table-ready item card.
+            SRD reference patterns, d100 item tables, magic ammunition, and monster-part crafting hooks into a table-ready item card.
           </p>
         </div>
       </section>
@@ -363,8 +397,8 @@ function App() {
 
           {input.srdReference && (
             <div className="selected-reference">
-              <strong>SRD source:</strong> {selectedSrdName ?? 'Selected reference'}
-              <button type="button" onClick={clearSrdEntry}>Clear</button>
+              <strong>Reference source:</strong> {selectedReferenceName ?? 'Selected reference'}
+              <button type="button" onClick={clearReferenceEntry}>Clear</button>
             </div>
           )}
 
@@ -467,45 +501,45 @@ function App() {
         <div className="section-title split-title">
           <span>
             <Database size={18} />
-            <h2>Local SRD Data</h2>
+            <h2>Reference Database</h2>
           </span>
           <small>
-            {srdDataset.spells.length} spells · {srdDataset.magicItems.length} magic items · {srdDataset.equipment.length} equipment
+            {srdDataset.spells.length} spells · {srdDataset.magicItems.length} SRD items · {srdDataset.equipment.length} equipment · {customItemCount} d100 items · {ammunitionCount} ammo
           </small>
         </div>
         <p className="srd-note">
-          This reads from <code>src/data/srd/srd-dataset.json</code>. Run <code>npm run import:srd</code> once to fill it from dnd5eapi.co.
+          This panel merges the local SRD snapshot with custom deconstruction tables. Run <code>npm run import:srd</code> once to fill SRD data; the screenshot item table and d100 ammunition table are already local.
         </p>
         <div className="srd-controls">
           <label>
-            <span><Search size={15} /> Search SRD entries</span>
-            <input value={srdQuery} onChange={(event) => setSrdQuery(event.target.value)} placeholder="fire, sword, invisibility, wand..." />
+            <span><Search size={15} /> Search references</span>
+            <input value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="fire, sword, arrow, invisibility, wand..." />
           </label>
           <label>
             Data Type
-            <select value={srdKind} onChange={(event) => setSrdKind(event.target.value as SrdKind)}>
-              {(['All', 'Spell', 'Magic Item', 'Equipment'] as SrdKind[]).map((kind) => (
+            <select value={referenceKind} onChange={(event) => setReferenceKind(event.target.value as ReferenceKind)}>
+              {(['All', 'Spell', 'Magic Item', 'Equipment', 'Item Reference', 'Magic Ammunition'] as ReferenceKind[]).map((kind) => (
                 <option key={kind}>{kind}</option>
               ))}
             </select>
           </label>
         </div>
 
-        {srdEntries.length === 0 ? (
+        {referenceEntries.length === 0 ? (
           <div className="empty-srd">
             <BookOpen size={20} />
-            <p>No SRD snapshot has been imported yet. Run <code>npm run import:srd</code>, commit the generated JSON, then this panel becomes a searchable data table.</p>
+            <p>No reference data is available yet. Run <code>npm run import:srd</code> to fill SRD data, or add custom reference rows under <code>src/data/custom</code>.</p>
           </div>
         ) : (
           <div className="srd-grid">
-            {filteredSrdEntries.map((entry) => (
+            {filteredReferenceEntries.map((entry) => (
               <article className="srd-card" key={entry.id}>
                 <div>
                   <span className="srd-badge">{entry.badge}</span>
                   <h3>{entry.name}</h3>
                   <p>{entry.summary}</p>
                 </div>
-                <button type="button" onClick={() => useSrdEntry(entry)}>Use as source</button>
+                <button type="button" onClick={() => useReferenceEntry(entry)}>Use as source</button>
               </article>
             ))}
           </div>
@@ -552,12 +586,12 @@ function App() {
           <div className="table-card">
             <h3>Database Shape</h3>
             <p>
-              SRD entries are stored as normalized spells, magic items, and equipment with names, tags, ranges, damage types,
-              rarity, and short descriptions. The generator uses them as patterns for new custom items.
+              Reference entries are stored as normalized spells, magic items, equipment, classic item patterns, and ammunition tricks.
+              The generator uses them as tags, templates, limits, and source patterns for new custom items.
             </p>
             <div className="code-chip">
               <WandSparkles size={16} />
-              SRD data → tags → template → unique output
+              reference data → tags → template → unique output
             </div>
           </div>
         </div>

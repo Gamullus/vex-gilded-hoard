@@ -1,14 +1,57 @@
 import { useMemo, useState } from 'react';
-import { Copy, Crown, Dice5, Hammer, ScrollText, Shield, Sparkles, WandSparkles } from 'lucide-react';
+import {
+  BookOpen,
+  Copy,
+  Crown,
+  Database,
+  Dice5,
+  Hammer,
+  ScrollText,
+  Search,
+  Shield,
+  Sparkles,
+  WandSparkles,
+} from 'lucide-react';
 import { generateItem } from './lib/generator';
-import type { ArmorSubtype, ClassName, GeneratorInput, ItemCategory, Rarity, WeaponSubtype } from './types';
+import type {
+  ArmorSubtype,
+  ClassName,
+  GeneratorInput,
+  ItemCategory,
+  Rarity,
+  SrdDataset,
+  SrdEquipment,
+  SrdMagicItem,
+  SrdSpell,
+  WeaponSubtype,
+} from './types';
 import { itemTemplates, rarityRules, spellDamageTable } from './data/tables';
+import rawSrdDataset from './data/srd/srd-dataset.json';
+
+const srdDataset = rawSrdDataset as SrdDataset;
 
 const itemCategories: ItemCategory[] = ['Weapon', 'Armor', 'Shield', 'Wondrous Item', 'Ring', 'Rod', 'Staff', 'Wand', 'Potion', 'Scroll'];
 const rarities: Rarity[] = ['Common', 'Uncommon', 'Rare', 'Very Rare', 'Legendary'];
 const weaponSubtypes: WeaponSubtype[] = ['Melee', 'Ranged', 'Two-Handed', 'Versatile', 'Finesse', 'Thrown', 'Ammunition'];
 const armorSubtypes: ArmorSubtype[] = ['Light Armor', 'Medium Armor', 'Heavy Armor', 'Shield'];
 const classNames: ClassName[] = ['Any', 'Artificer', 'Barbarian', 'Bard', 'Cleric', 'Druid', 'Fighter', 'Monk', 'Paladin', 'Ranger', 'Rogue', 'Sorcerer', 'Warlock', 'Wizard'];
+
+type SrdKind = 'All' | 'Spell' | 'Magic Item' | 'Equipment';
+
+type SrdEntry = {
+  id: string;
+  kind: Exclude<SrdKind, 'All'>;
+  name: string;
+  badge: string;
+  summary: string;
+  reference: string;
+  themeHint: string;
+  categoryHint?: ItemCategory;
+  weaponSubtypeHint?: WeaponSubtype;
+  armorSubtypeHint?: ArmorSubtype;
+  rarityHint?: Rarity;
+  searchText: string;
+};
 
 const defaultInput: GeneratorInput = {
   category: 'Weapon',
@@ -18,22 +61,203 @@ const defaultInput: GeneratorInput = {
   theme: 'gilded necrotic dragon hoard',
   classAttunement: 'Any',
   creatureStatblock: '',
+  srdReference: '',
   allowDownside: true,
   includeSpellLike: true,
 };
 
+function normalizeRarity(value?: string): Rarity | undefined {
+  const text = value?.toLowerCase() ?? '';
+  if (text.includes('legendary')) return 'Legendary';
+  if (text.includes('very rare')) return 'Very Rare';
+  if (text.includes('rare')) return 'Rare';
+  if (text.includes('uncommon')) return 'Uncommon';
+  if (text.includes('common')) return 'Common';
+  return undefined;
+}
+
+function themeFromText(...parts: Array<string | undefined>): string {
+  const text = parts.filter(Boolean).join(' ').toLowerCase();
+  const tags = [
+    'acid',
+    'cold',
+    'fire',
+    'force',
+    'lightning',
+    'necrotic',
+    'poison',
+    'psychic',
+    'radiant',
+    'thunder',
+    'fey',
+    'dragon',
+    'shadow',
+    'sea',
+    'dream',
+    'storm',
+  ].filter((tag) => text.includes(tag));
+
+  if (text.includes('necromancy')) tags.push('necrotic');
+  if (text.includes('evocation')) tags.push('arcane');
+  if (text.includes('illusion')) tags.push('illusion');
+  if (text.includes('divination')) tags.push('oracle');
+  if (text.includes('abjuration')) tags.push('warding');
+  if (text.includes('conjuration')) tags.push('summoning');
+  if (text.includes('enchantment')) tags.push('charm');
+  if (text.includes('transmutation')) tags.push('shifting');
+
+  return Array.from(new Set(tags)).slice(0, 4).join(' ') || 'srd-forged gilded';
+}
+
+function spellToEntry(spell: SrdSpell): SrdEntry {
+  const classes = spell.classes?.length ? ` · ${spell.classes.join(', ')}` : '';
+  const damage = spell.damageType ? ` · ${spell.damageType}` : '';
+  const save = spell.saveType ? ` · ${spell.saveType} save` : '';
+  const summary = `Level ${spell.level ?? 0} ${spell.school ?? 'spell'}${damage}${save}${classes}`;
+  const reference = [
+    `SRD Spell: ${spell.name}`,
+    `Level: ${spell.level ?? 0}`,
+    spell.school ? `School: ${spell.school}` : undefined,
+    spell.damageType ? `Damage: ${spell.damageType}` : undefined,
+    spell.saveType ? `Save: ${spell.saveType}` : undefined,
+    spell.attackType ? `Attack: ${spell.attackType}` : undefined,
+    spell.range ? `Range: ${spell.range}` : undefined,
+    spell.duration ? `Duration: ${spell.duration}` : undefined,
+    spell.classes?.length ? `Classes: ${spell.classes.join(', ')}` : undefined,
+    spell.desc ? `Description: ${spell.desc.slice(0, 600)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    id: `spell:${spell.index}`,
+    kind: 'Spell',
+    name: spell.name,
+    badge: `Spell ${spell.level ?? 0}`,
+    summary,
+    reference,
+    themeHint: themeFromText(spell.name, spell.school, spell.damageType, spell.desc),
+    categoryHint: 'Wand',
+    rarityHint: spell.level === undefined || spell.level <= 1 ? 'Common' : spell.level <= 3 ? 'Uncommon' : spell.level <= 5 ? 'Rare' : spell.level <= 8 ? 'Very Rare' : 'Legendary',
+    searchText: `${spell.name} ${summary} ${spell.desc ?? ''}`.toLowerCase(),
+  };
+}
+
+function magicItemToEntry(item: SrdMagicItem): SrdEntry {
+  const summary = `${item.rarity ?? 'SRD'} ${item.category ?? 'magic item'}${item.variants?.length ? ` · variants: ${item.variants.join(', ')}` : ''}`;
+  const reference = [
+    `SRD Magic Item: ${item.name}`,
+    item.rarity ? `Rarity: ${item.rarity}` : undefined,
+    item.category ? `Category: ${item.category}` : undefined,
+    item.variants?.length ? `Variants: ${item.variants.join(', ')}` : undefined,
+    item.desc ? `Description: ${item.desc.slice(0, 800)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    id: `magic-item:${item.index}`,
+    kind: 'Magic Item',
+    name: item.name,
+    badge: item.rarity ?? 'Magic Item',
+    summary,
+    reference,
+    themeHint: themeFromText(item.name, item.rarity, item.category, item.desc),
+    categoryHint: 'Wondrous Item',
+    rarityHint: normalizeRarity(item.rarity),
+    searchText: `${item.name} ${summary} ${item.desc ?? ''}`.toLowerCase(),
+  };
+}
+
+function equipmentToEntry(item: SrdEquipment): SrdEntry {
+  const isWeapon = item.category?.toLowerCase().includes('weapon') || Boolean(item.weaponCategory);
+  const isArmor = item.category?.toLowerCase().includes('armor') || Boolean(item.armorCategory);
+  const categoryHint: ItemCategory = isWeapon ? 'Weapon' : isArmor ? 'Armor' : 'Wondrous Item';
+  const weaponSubtypeHint: WeaponSubtype | undefined = item.weaponRange === 'Ranged' ? 'Ranged' : item.properties?.includes('Two-Handed') ? 'Two-Handed' : item.properties?.includes('Versatile') ? 'Versatile' : item.properties?.includes('Thrown') ? 'Thrown' : isWeapon ? 'Melee' : undefined;
+  const armorSubtypeHint: ArmorSubtype | undefined = item.armorCategory?.includes('Heavy') ? 'Heavy Armor' : item.armorCategory?.includes('Medium') ? 'Medium Armor' : item.armorCategory?.includes('Light') ? 'Light Armor' : undefined;
+  const summary = [item.category, item.weaponCategory, item.armorCategory, item.damageDice, item.damageType, item.properties?.join(', ')].filter(Boolean).join(' · ');
+  const reference = [
+    `SRD Equipment: ${item.name}`,
+    item.category ? `Category: ${item.category}` : undefined,
+    item.weaponCategory ? `Weapon Category: ${item.weaponCategory}` : undefined,
+    item.armorCategory ? `Armor Category: ${item.armorCategory}` : undefined,
+    item.damageDice ? `Damage: ${item.damageDice} ${item.damageType ?? ''}` : undefined,
+    item.twoHandedDamageDice ? `Two-Handed Damage: ${item.twoHandedDamageDice} ${item.twoHandedDamageType ?? ''}` : undefined,
+    item.properties?.length ? `Properties: ${item.properties.join(', ')}` : undefined,
+    item.armorClassBase ? `Base AC: ${item.armorClassBase}` : undefined,
+    item.cost ? `Cost: ${item.cost}` : undefined,
+    item.weight ? `Weight: ${item.weight}` : undefined,
+    item.desc ? `Description: ${item.desc.slice(0, 600)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    id: `equipment:${item.index}`,
+    kind: 'Equipment',
+    name: item.name,
+    badge: item.category ?? 'Equipment',
+    summary,
+    reference,
+    themeHint: themeFromText(item.name, item.damageType, item.category, item.properties?.join(' '), item.desc),
+    categoryHint,
+    weaponSubtypeHint,
+    armorSubtypeHint,
+    searchText: `${item.name} ${summary} ${item.desc ?? ''}`.toLowerCase(),
+  };
+}
+
+function makeSrdEntries(dataset: SrdDataset): SrdEntry[] {
+  return [
+    ...dataset.spells.map(spellToEntry),
+    ...dataset.magicItems.map(magicItemToEntry),
+    ...dataset.equipment.map(equipmentToEntry),
+  ];
+}
+
 function App() {
   const [input, setInput] = useState<GeneratorInput>(defaultInput);
   const [rollId, setRollId] = useState(1);
+  const [srdQuery, setSrdQuery] = useState('');
+  const [srdKind, setSrdKind] = useState<SrdKind>('All');
+  const [selectedSrdName, setSelectedSrdName] = useState<string | null>(null);
+
   const generated = useMemo(() => generateItem({ ...input, theme: `${input.theme} #${rollId}` }), [input, rollId]);
   const cleanGenerated = useMemo(() => ({ ...generated, story: generated.story.replace(/ #\d+/g, '') }), [generated]);
+  const srdEntries = useMemo(() => makeSrdEntries(srdDataset), []);
+  const filteredSrdEntries = useMemo(() => {
+    const query = srdQuery.trim().toLowerCase();
+    return srdEntries
+      .filter((entry) => srdKind === 'All' || entry.kind === srdKind)
+      .filter((entry) => !query || entry.searchText.includes(query))
+      .slice(0, 18);
+  }, [srdEntries, srdKind, srdQuery]);
 
   const update = <K extends keyof GeneratorInput>(key: K, value: GeneratorInput[K]) => {
     setInput((current) => ({ ...current, [key]: value }));
   };
 
+  const useSrdEntry = (entry: SrdEntry) => {
+    setSelectedSrdName(entry.name);
+    setInput((current) => ({
+      ...current,
+      theme: [entry.themeHint, current.theme].filter(Boolean).join(' '),
+      category: entry.categoryHint ?? current.category,
+      weaponSubtype: entry.weaponSubtypeHint ?? current.weaponSubtype,
+      armorSubtype: entry.armorSubtypeHint ?? current.armorSubtype,
+      rarity: entry.rarityHint ?? current.rarity,
+      includeSpellLike: entry.kind === 'Spell' ? true : current.includeSpellLike,
+      srdReference: entry.reference,
+    }));
+  };
+
+  const clearSrdEntry = () => {
+    setSelectedSrdName(null);
+    update('srdReference', '');
+  };
+
   const copyMarkdown = async () => {
-    const markdown = `### ${cleanGenerated.name}\n*${cleanGenerated.typeLine} (${cleanGenerated.requiresAttunement})*\n\n${cleanGenerated.appearance}\n\n${cleanGenerated.story}\n\n**Properties**\n${cleanGenerated.properties.map((property) => `- ${property}`).join('\n')}\n\n**Minor Property.** ${cleanGenerated.minorProperty}\n\n**Quirk.** ${cleanGenerated.quirk ?? 'None.'}\n\n${cleanGenerated.craftingHook ? `**Crafting.** ${cleanGenerated.craftingHook}\n\n` : ''}**Balance Notes**\n${cleanGenerated.balanceNotes.map((note) => `- ${note}`).join('\n')}\n\n**Reference Template.** ${cleanGenerated.sourceTemplate}`;
+    const markdown = `### ${cleanGenerated.name}\n*${cleanGenerated.typeLine} (${cleanGenerated.requiresAttunement})*\n\n${cleanGenerated.appearance}\n\n${cleanGenerated.story}\n\n**Properties**\n${cleanGenerated.properties.map((property) => `- ${property}`).join('\n')}\n\n**Minor Property.** ${cleanGenerated.minorProperty}\n\n**Quirk.** ${cleanGenerated.quirk ?? 'None.'}\n\n${cleanGenerated.craftingHook ? `**Crafting.** ${cleanGenerated.craftingHook}\n\n` : ''}${input.srdReference ? `**SRD Reference Used.** ${selectedSrdName ?? 'Selected reference'}\n\n` : ''}**Balance Notes**\n${cleanGenerated.balanceNotes.map((note) => `- ${note}`).join('\n')}\n\n**Reference Template.** ${cleanGenerated.sourceTemplate}`;
     await navigator.clipboard.writeText(markdown);
   };
 
@@ -48,7 +272,7 @@ function App() {
           <h1>Vex&apos;s Gilded Hoard</h1>
           <p className="hero-copy">
             A magic item maker that rolls together rarity limits, class attunement, minor properties, spell-like ceilings,
-            and monster-part crafting hooks into a table-ready item card.
+            SRD reference patterns, and monster-part crafting hooks into a table-ready item card.
           </p>
         </div>
       </section>
@@ -136,6 +360,13 @@ function App() {
               Allow downside / counterplay
             </label>
           </div>
+
+          {input.srdReference && (
+            <div className="selected-reference">
+              <strong>SRD source:</strong> {selectedSrdName ?? 'Selected reference'}
+              <button type="button" onClick={clearSrdEntry}>Clear</button>
+            </div>
+          )}
 
           <label>
             Optional Creature Statblock
@@ -232,6 +463,55 @@ function App() {
         </section>
       </section>
 
+      <section className="panel srd-panel">
+        <div className="section-title split-title">
+          <span>
+            <Database size={18} />
+            <h2>Local SRD Data</h2>
+          </span>
+          <small>
+            {srdDataset.spells.length} spells · {srdDataset.magicItems.length} magic items · {srdDataset.equipment.length} equipment
+          </small>
+        </div>
+        <p className="srd-note">
+          This reads from <code>src/data/srd/srd-dataset.json</code>. Run <code>npm run import:srd</code> once to fill it from dnd5eapi.co.
+        </p>
+        <div className="srd-controls">
+          <label>
+            <span><Search size={15} /> Search SRD entries</span>
+            <input value={srdQuery} onChange={(event) => setSrdQuery(event.target.value)} placeholder="fire, sword, invisibility, wand..." />
+          </label>
+          <label>
+            Data Type
+            <select value={srdKind} onChange={(event) => setSrdKind(event.target.value as SrdKind)}>
+              {(['All', 'Spell', 'Magic Item', 'Equipment'] as SrdKind[]).map((kind) => (
+                <option key={kind}>{kind}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {srdEntries.length === 0 ? (
+          <div className="empty-srd">
+            <BookOpen size={20} />
+            <p>No SRD snapshot has been imported yet. Run <code>npm run import:srd</code>, commit the generated JSON, then this panel becomes a searchable data table.</p>
+          </div>
+        ) : (
+          <div className="srd-grid">
+            {filteredSrdEntries.map((entry) => (
+              <article className="srd-card" key={entry.id}>
+                <div>
+                  <span className="srd-badge">{entry.badge}</span>
+                  <h3>{entry.name}</h3>
+                  <p>{entry.summary}</p>
+                </div>
+                <button type="button" onClick={() => useSrdEntry(entry)}>Use as source</button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="panel tables-panel">
         <div className="section-title">
           <ScrollText size={18} />
@@ -270,14 +550,14 @@ function App() {
             </ul>
           </div>
           <div className="table-card">
-            <h3>Future Database Shape</h3>
+            <h3>Database Shape</h3>
             <p>
-              Each reference item can store: name, type, rarity, attunement, safe summary, mechanical tags, source/license,
-              and deconstruction notes. That lets the generator compare patterns without copying full protected text.
+              SRD entries are stored as normalized spells, magic items, and equipment with names, tags, ranges, damage types,
+              rarity, and short descriptions. The generator uses them as patterns for new custom items.
             </p>
             <div className="code-chip">
               <WandSparkles size={16} />
-              item → tags → template → unique output
+              SRD data → tags → template → unique output
             </div>
           </div>
         </div>

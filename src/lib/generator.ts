@@ -1,24 +1,18 @@
-import type { CreatureProfile, GeneratedItem, GeneratorInput, Rarity } from '../types';
+import type { CreatureProfile, GeneratedItem, GeneratorInput } from '../types';
+import { categorySubtitles, classAttunementHooks, itemTemplates, rarityRules } from '../data/tables';
 import {
-  bonusByRarity,
-  categoryMechanics,
-  categorySubtitles,
-  chargesByRarity,
-  classAttunementHooks,
-  damageDiceByRarity,
-  downsideOptions,
-  itemTemplates,
-  magicVerbs,
-  minorProperties,
-  quirks,
-  rarityRules,
+  firstLevelSpellProperties,
+  getClassSkillPool,
+  nonSpellProperty,
+  propertyCountByRarity,
+  rollPropertyTable,
   saveDcByRarity,
-  spellLikeEffects,
-  themeEffects,
-  themeWords,
-} from '../data/tables';
-
-const rarityOrder: Rarity[] = ['Common', 'Uncommon', 'Rare', 'Very Rare', 'Legendary'];
+  secondLevelSpellProperties,
+  skillProperty,
+  thirdLevelSpellProperties,
+  type PropertyTableKey,
+  type RolledProperty,
+} from '../data/property-tables';
 
 function hash(input: string): number {
   let h = 2166136261;
@@ -37,6 +31,10 @@ function pick<T>(items: T[], seed: string, salt: string): T {
   return items[index];
 }
 
+function die(seed: string, salt: string, sides = 10): number {
+  return (hash(`${seed}:${salt}`) % sides) + 1;
+}
+
 function titleCase(value: string): string {
   return value
     .split(/\s+/)
@@ -46,32 +44,11 @@ function titleCase(value: string): string {
 }
 
 function normalizeTheme(theme: string): string {
-  return theme.trim().toLowerCase() || 'gilded hoard';
-}
-
-function themeKeywords(theme: string): string[] {
-  const normalized = normalizeTheme(theme);
-  const direct = Object.keys(themeEffects).filter((key) => normalized.includes(key));
-  if (direct.length > 0) return direct;
-  return ['shadow'];
+  return theme.replace(/#\d+$/g, '').trim().toLowerCase() || 'unclaimed relic';
 }
 
 function referenceText(input: GeneratorInput): string {
   return input.srdReference?.trim() ?? '';
-}
-
-function inferDamageType(theme: string, creature: CreatureProfile, reference = ''): string {
-  const merged = `${theme} ${creature.damageHints.join(' ')} ${reference}`.toLowerCase();
-  if (merged.includes('fire')) return 'fire';
-  if (merged.includes('cold') || merged.includes('frost') || merged.includes('ice')) return 'cold';
-  if (merged.includes('lightning') || merged.includes('thunder') || merged.includes('storm')) return merged.includes('thunder') ? 'thunder' : 'lightning';
-  if (merged.includes('acid')) return 'acid';
-  if (merged.includes('poison') || merged.includes('venom')) return 'poison';
-  if (merged.includes('psychic') || merged.includes('dream') || merged.includes('mind')) return 'psychic';
-  if (merged.includes('radiant') || merged.includes('holy') || merged.includes('sun')) return 'radiant';
-  if (merged.includes('necrotic') || merged.includes('death') || merged.includes('undead')) return 'necrotic';
-  if (merged.includes('force') || merged.includes('gravity')) return 'force';
-  return 'necrotic';
 }
 
 export function parseCreatureStatblock(raw: string): CreatureProfile {
@@ -90,29 +67,14 @@ export function parseCreatureStatblock(raw: string): CreatureProfile {
   const crMatch = text.match(/(?:challenge|cr)\s*(?:rating)?\s*[:\-]?\s*([0-9/]+|\d+)/i);
   const damageSections = [...text.matchAll(/Damage (?:Resistances|Immunities|Vulnerabilities)\s*[:\-]?\s*([^\n]+)/gi)].map((match) => match[1]);
   const conditionSections = [...text.matchAll(/Condition Immunities\s*[:\-]?\s*([^\n]+)/gi)].map((match) => match[1]);
-  const damageWords = [
-    'acid',
-    'cold',
-    'fire',
-    'force',
-    'lightning',
-    'necrotic',
-    'poison',
-    'psychic',
-    'radiant',
-    'thunder',
-  ];
+  const damageWords = ['acid', 'cold', 'fire', 'force', 'lightning', 'necrotic', 'poison', 'psychic', 'radiant', 'thunder'];
   const damageHints = damageWords.filter((word) => new RegExp(`\\b${word}\\b`, 'i').test(text));
 
   const traitLines = lines.filter((line) => {
     const looksLikeTrait = /^[A-Z][A-Za-z'’ -]+\./.test(line);
-    const usefulKeyword = /(breath|gaze|aura|regeneration|web|pounce|swallow|charm|frightful|shapechanger|spellcasting|incorporeal|amphibious|keen|pack tactics)/i.test(
-      line,
-    );
+    const usefulKeyword = /(breath|gaze|aura|regeneration|web|pounce|swallow|charm|frightful|shapechanger|spellcasting|incorporeal|amphibious|keen|pack tactics)/i.test(line);
     return looksLikeTrait || usefulKeyword;
   });
-
-  const component = chooseCreatureComponent(text);
 
   return {
     name,
@@ -121,7 +83,7 @@ export function parseCreatureStatblock(raw: string): CreatureProfile {
     damageHints,
     defenses: [...damageSections, ...conditionSections].map((entry) => entry.trim()).slice(0, 5),
     traits: traitLines.slice(0, 5),
-    component,
+    component: chooseCreatureComponent(text),
   };
 }
 
@@ -138,19 +100,15 @@ function chooseCreatureComponent(text: string): string {
   return 'a trophy fragment chosen from the creature’s signature anatomy';
 }
 
-function makeName(input: GeneratorInput, creature: CreatureProfile): string {
-  const seed = JSON.stringify({ ...input, creature });
-  const theme = normalizeTheme(input.theme);
-  const themeTitle = titleCase(theme.split(/[,:;|/]+/)[0] || pick(themeWords, seed, 'fallback-theme'));
-  const noun = pick(categorySubtitles[input.category], seed, 'noun');
-  const prefix = pick(themeWords, seed, 'prefix');
-  const verb = pick(magicVerbs, seed, 'verb');
-  const creatureFragment = creature.name ? ` of the ${creature.name.replace(/^the\s+/i, '')}` : '';
+function shouldRequireAttunement(input: GeneratorInput): boolean {
+  if (input.category === 'Potion' || input.category === 'Scroll') return false;
+  if (input.classAttunement !== 'Any') return true;
+  return input.rarity !== 'Common';
+}
 
-  if (input.category === 'Potion') return `${themeTitle} ${titleCase(noun)} of ${titleCase(verb)}`;
-  if (input.category === 'Scroll') return `${titleCase(prefix)} ${titleCase(noun)} of ${themeTitle}`;
-  if (creature.name && input.creatureStatblock.trim()) return `${themeTitle} ${titleCase(noun)}${creatureFragment}`;
-  return `${titleCase(prefix)} ${titleCase(noun)} of ${themeTitle}`;
+function makeAttunement(input: GeneratorInput): string {
+  if (!shouldRequireAttunement(input)) return 'does not require attunement';
+  return pick(classAttunementHooks[input.classAttunement], JSON.stringify(input), 'class-hook');
 }
 
 function makeTypeLine(input: GeneratorInput): string {
@@ -160,127 +118,121 @@ function makeTypeLine(input: GeneratorInput): string {
   return `${input.category}, ${input.rarity}`;
 }
 
-function shouldRequireAttunement(input: GeneratorInput): boolean {
-  if (input.category === 'Potion' || input.category === 'Scroll') return false;
-  if (input.classAttunement !== 'Any') return true;
-  if (input.rarity === 'Common') return false;
-  if (input.rarity === 'Uncommon') return input.category !== 'Weapon' || input.includeSpellLike;
-  return true;
+function makeName(input: GeneratorInput, rolledProperties: RolledProperty[]): string {
+  const seed = JSON.stringify({ input, rolledProperties });
+  const theme = normalizeTheme(input.theme);
+  const themeTitle = titleCase(theme.split(/[,:;|/]+/)[0]);
+  const noun = pick(categorySubtitles[input.category], seed, 'noun');
+  const signature = rolledProperties[0]?.label ?? 'Burden';
+  return `${titleCase(noun)} of ${signature.includes(' or ') ? themeTitle : signature}`;
 }
 
-function makeAttunement(input: GeneratorInput): string {
-  if (!shouldRequireAttunement(input)) return 'does not require attunement';
-  return pick(classAttunementHooks[input.classAttunement], JSON.stringify(input), 'class-hook');
+function selectSpellProperty(table: PropertyTableKey, roll: number): RolledProperty {
+  const source = table === 'spell1' ? firstLevelSpellProperties : table === 'spell2' ? secondLevelSpellProperties : thirdLevelSpellProperties;
+  const selected = source[Math.max(0, Math.min(9, roll - 1))];
+  return { ...selected, table };
 }
 
-function makeStory(input: GeneratorInput, creature: CreatureProfile): string {
-  const seed = JSON.stringify({ ...input, creature });
-  const theme = titleCase(normalizeTheme(input.theme));
-  const maker = pick(
-    ['a nameless court enchanter', 'a jealous treasure-priest', 'Vex during a sleepless bargain', 'a dragon-hoard goldsmith', 'a battlefield artificer', 'a masked hedge-witch', 'a drowned oracle'],
-    seed,
-    'maker',
+function rollProperties(input: GeneratorInput): RolledProperty[] {
+  const propertyCount = propertyCountByRarity[input.rarity];
+  const seed = JSON.stringify(input);
+  const output: RolledProperty[] = [];
+  const usedLabels = new Set<string>();
+
+  for (let i = 0; i < propertyCount; i += 1) {
+    let tableRoll = die(seed, `table-${i}`);
+    let table = rollPropertyTable(tableRoll, input.rarity);
+
+    if (input.rarity === 'Uncommon' && i === 0) table = 'skill';
+    if (input.rarity === 'Uncommon' && i === 1 && table === 'skill') table = 'spell1';
+
+    const propertyRoll = die(seed, `property-${i}`);
+    let property: RolledProperty;
+
+    if (table === 'skill') {
+      const skillPool = getClassSkillPool(input.classAttunement);
+      const skill = skillPool[(propertyRoll - 1) % skillPool.length];
+      property = { ...skillProperty(skill, input.rarity), roll: propertyRoll };
+    } else if (table === 'nonSpell') {
+      property = nonSpellProperty(propertyRoll, input.rarity, input.category);
+    } else {
+      property = selectSpellProperty(table, propertyRoll);
+    }
+
+    if (usedLabels.has(property.label)) {
+      property = nonSpellProperty(die(seed, `fallback-${i}`), input.rarity, input.category);
+    }
+
+    usedLabels.add(property.label);
+    output.push(property);
+  }
+
+  return output;
+}
+
+function propertyLine(property: RolledProperty, input: GeneratorInput): string {
+  const text = property.text.replace('The save DC is based on the item rarity.', `The save DC is ${saveDcByRarity[input.rarity]}.`);
+  return `${property.label}. ${text}`;
+}
+
+function makeStory(input: GeneratorInput, rolledProperties: RolledProperty[], creature: CreatureProfile): string {
+  const famedFor = rolledProperties.map((property) => property.label).join(', ');
+  const previousWielder = pick(
+    [
+      'a duelist whose name opened doors before their blade was ever drawn',
+      'a courier who crossed impossible distances and made enemies of every border',
+      'a court magician praised for solving problems no one else could even name',
+      'a thief celebrated for surviving falls, locks, guards, and bad omens',
+      'a monster hunter whose reputation became more dangerous than the beasts',
+      'a battlefield saint who was expected to save everyone and could not stop trying',
+      'a masked performer whose tricks became indistinguishable from miracles',
+      'a sailor whose impossible escapes turned into debts owed to the deep',
+    ],
+    JSON.stringify(input),
+    'previous-wielder',
   );
-  const history = creature.name
-    ? `Its final enchantment was quenched with ${creature.component}, taken from ${creature.name}.`
-    : pick(
-        [
-          'Its first owner vanished after paying a debt in coins that were not minted yet.',
-          'It was lost in a vault where every lock had learned to lie.',
-          'It was made as a reward, then hidden because the reward proved too tempting.',
-          'Its magic still remembers the hand that dropped it into a king’s ransom.',
-        ],
-        seed,
-        'history',
-      );
-
-  const ref = referenceText(input)
-    ? ' Its enchantment was patterned after an SRD reference entry, then twisted into a new hoard-worthy form.'
-    : '';
-
-  return `${maker} made this ${input.category.toLowerCase()} for a ${theme.toLowerCase()} problem that ordinary steel, prayer, or coin could not solve. ${history}${ref}`;
+  const burden = pick(
+    [
+      'the fame became a leash',
+      'every victory created another desperate request',
+      'the item began answering need before its bearer could refuse',
+      'people stopped seeing a person and only saw the miracle',
+      'the last owner could no longer tell whether they chose the item or the item chose for them',
+    ],
+    JSON.stringify(input),
+    'burden',
+  );
+  const creatureLine = creature.name ? ` Its present form also carries a worked remnant of ${creature.name}.` : '';
+  return `This item once belonged to ${previousWielder}, famed for ${famedFor}. Vex took it when ${burden}, leaving the talent behind but removing the worst of the burden.${creatureLine}`;
 }
 
-function makeAppearance(input: GeneratorInput, creature: CreatureProfile): string {
-  const seed = JSON.stringify({ ...input, creature });
+function makeAppearance(input: GeneratorInput, rolledProperties: RolledProperty[], creature: CreatureProfile): string {
+  const seed = JSON.stringify({ input, rolledProperties, creature });
   const material = pick(
     ['charcoal iron', 'blackened silver', 'violet glass', 'old bone under gold leaf', 'dark leather and pale thread', 'smoked crystal', 'coin-bright brass'],
     seed,
     'material',
   );
-  const detail = creature.component
-    ? `A visible setting holds ${creature.component}, worked into the design rather than hidden.`
-    : pick(
-        [
-          'Pale lavender runes wake under moonlight.',
-          'Its edges look gilded only when no one is touching it.',
-          'A thin line of purple light moves beneath the surface like a trapped thought.',
-          'The maker’s mark is a tiny kobold claw stamped inside a coin-shaped seal.',
-        ],
-        seed,
-        'detail',
-      );
-  return `Made from ${material}, this item keeps the black-charcoal-purple look of Vex’s hoard. ${detail}`;
+  const propertyMotif = rolledProperties.slice(0, 2).map((property) => property.tags[0]).filter(Boolean).join(' and ');
+  const creatureDetail = creature.component ? ` A visible setting holds ${creature.component}.` : '';
+  return `Made from ${material}, the item bears small marks suggesting ${propertyMotif || normalizeTheme(input.theme)} rather than open decoration.${creatureDetail}`;
 }
 
-function fillTemplate(template: string, input: GeneratorInput, damageType: string): string {
-  return template
-    .replaceAll('{bonus}', bonusByRarity[input.rarity])
-    .replaceAll('{damageDie}', damageDiceByRarity[input.rarity])
-    .replaceAll('{damageType}', damageType)
-    .replaceAll('{charges}', chargesByRarity[input.rarity]);
-}
-
-function summarizeSrdReference(reference: string): string | undefined {
-  if (!reference.trim()) return undefined;
-  const compact = reference.replace(/\s+/g, ' ').trim();
-  return compact.length > 220 ? `${compact.slice(0, 220)}…` : compact;
-}
-
-function makeProperties(input: GeneratorInput, creature: CreatureProfile): string[] {
-  const seed = JSON.stringify({ ...input, creature });
-  const ref = referenceText(input);
-  const damageType = inferDamageType(input.theme, creature, ref);
-  const templates = categoryMechanics[input.category];
-  const properties = [fillTemplate(pick(templates, seed, 'base-mechanic'), input, damageType)];
-  const keyword = themeKeywords(`${input.theme} ${ref}`)[0];
-  const themedEffects = themeEffects[keyword] ?? themeEffects.shadow;
-  const rider = pick(themedEffects, seed, 'rider');
-
-  if (input.category === 'Weapon') {
-    if (input.rarity !== 'Common') {
-      properties.push(`The first time each round you trigger the item’s rider, the target must succeed on a ${saveDcByRarity[input.rarity]} saving throw or suffer a brief ${rider} effect until the start of your next turn.`);
-    } else {
-      properties.push(`The weapon counts as magical and can display a harmless ${rider} sign on command.`);
-    }
-  } else if (input.category === 'Armor' || input.category === 'Shield') {
-    properties.push(`When the theme is relevant, the item can turn a hard hit into a story beat: ${rider}. The DM decides the exact narrow trigger when the item is created.`);
-  } else {
-    properties.push(`Choose one signature use when the item is created: ${themedEffects.slice(0, 3).join(', ')}. This keeps the item focused instead of becoming a bag of unrelated powers.`);
-  }
-
-  if (input.includeSpellLike) {
-    const allowed = spellLikeEffects.filter((effect) => rarityOrder.indexOf(effect.minRarity) <= rarityOrder.indexOf(input.rarity));
-    properties.push(pick(allowed, seed, 'spell-like').effect);
-  }
-
-  const srdSummary = summarizeSrdReference(ref);
-  if (srdSummary) {
-    properties.push(`SRD reference influence: ${srdSummary} Use it as inspiration for tags, range, damage type, save type, duration, or activation limits, not as a direct copy unless you want the item to reproduce that SRD effect.`);
-  }
-
-  if (creature.name) {
-    const traitText = creature.traits[0]
-      ? `It borrows a restrained version of this creature trait: “${creature.traits[0].slice(0, 120)}${creature.traits[0].length > 120 ? '…' : ''}”`
-      : 'It borrows a restrained version of the creature’s strongest visual or defensive theme.';
-    properties.push(`${traitText} The borrowed effect should stay below the rarity’s spell/bonus ceiling.`);
-  }
-
-  if (input.allowDownside && rarityOrder.indexOf(input.rarity) >= rarityOrder.indexOf('Rare')) {
-    properties.push(pick(downsideOptions, seed, 'downside'));
-  }
-
-  return properties;
+function makeMinorProperty(input: GeneratorInput, rolledProperties: RolledProperty[]): string {
+  const skill = rolledProperties.find((property) => property.table === 'skill');
+  if (skill) return `Its minor property is already represented by ${skill.label}: ${skill.text}`;
+  const warning = pick(
+    [
+      'The item grows warm when its active property can solve a nearby problem.',
+      'The item quietly reveals its command word to a newly attuned bearer in a dream.',
+      'The item can appear mundane until deliberately used.',
+      'The item never harms a creature the bearer has honestly sworn to protect unless the bearer forces it to.',
+      'The item briefly shows the silhouette of its previous wielder when initiative is rolled.',
+    ],
+    JSON.stringify(input),
+    'minor',
+  );
+  return warning;
 }
 
 function makeCraftingHook(creature: CreatureProfile, input: GeneratorInput): string | undefined {
@@ -290,48 +242,43 @@ function makeCraftingHook(creature: CreatureProfile, input: GeneratorInput): str
   return `Crafting suggestion:${cr} ${creature.name ?? 'the creature'} can provide ${creature.component}.${defenses} The crafter still needs a mundane ${input.category.toLowerCase()} base, rare reagents worth a DM-set cost, and downtime appropriate to the item’s rarity.`;
 }
 
-function makeBalanceNotes(input: GeneratorInput): string[] {
+function summarizeReference(reference: string): string | undefined {
+  if (!reference.trim()) return undefined;
+  const compact = reference.replace(/\s+/g, ' ').trim();
+  return compact.length > 180 ? `${compact.slice(0, 180)}…` : compact;
+}
+
+function makeBalanceNotes(input: GeneratorInput, rolledProperties: RolledProperty[]): string[] {
   const rule = rarityRules[input.rarity];
+  const reference = summarizeReference(referenceText(input));
   const notes = [
-    `${input.rarity} ceiling: ${rule.maxSpellLevel}; static bonus target: ${rule.maxBonus}.`,
-    'Keep the item to one main job: either improve something the character already does or grant one new trick.',
+    `${input.rarity} property count: ${rolledProperties.length}. Ceiling: ${rule.maxSpellLevel}; static bonus target: ${rule.maxBonus}.`,
+    `Property tables rolled: ${rolledProperties.map((property) => property.table).join(', ')}.`,
   ];
 
-  if (input.includeSpellLike) {
-    notes.push('Spell-like effects should use charges, once-per-day limits, a save DC, line of sight, or another clear limiter.');
-  }
-
-  if (referenceText(input)) {
-    notes.push('The selected SRD entry is used as a comparison pattern for tags and limits. The generated item should still be checked against the rarity ceiling.');
-  }
-
-  if (shouldRequireAttunement(input)) {
-    notes.push('Attunement is used here to prevent sharing, stacking, and passive bonus abuse.');
-  }
-
+  if (input.rarity === 'Uncommon') notes.push('Uncommon items are capped at two properties: one passive/minor property and one daily, charged, or command property.');
+  if (reference) notes.push(`Reference influence: ${reference}`);
+  if (shouldRequireAttunement(input)) notes.push('Attunement is used to prevent sharing, stacking, and passive bonus abuse.');
   return notes;
 }
 
 export function generateItem(input: GeneratorInput): GeneratedItem {
   const creature = parseCreatureStatblock(input.creatureStatblock);
-  const seed = JSON.stringify({ ...input, creature, timeBucket: Math.floor(Date.now() / 1000) });
-  const sourceTemplate = pick(itemTemplates, seed, 'template');
-  const srd = summarizeSrdReference(referenceText(input));
+  const rolledProperties = rollProperties(input);
+  const sourceTemplate = pick(itemTemplates, JSON.stringify(input), 'template');
 
   return {
-    name: makeName(input, creature),
+    name: makeName(input, rolledProperties),
     typeLine: makeTypeLine(input),
     rarity: input.rarity,
     requiresAttunement: makeAttunement(input),
-    story: makeStory(input, creature),
-    appearance: makeAppearance(input, creature),
-    properties: makeProperties(input, creature),
-    minorProperty: pick(minorProperties, seed, 'minor'),
-    quirk: pick(quirks, seed, 'quirk'),
+    story: makeStory(input, rolledProperties, creature),
+    appearance: makeAppearance(input, rolledProperties, creature),
+    properties: rolledProperties.map((property) => propertyLine(property, input)),
+    minorProperty: makeMinorProperty(input, rolledProperties),
+    quirk: 'The item is not framed as treasure; it is a talent taken from someone who could no longer survive being known for it.',
     craftingHook: makeCraftingHook(creature, input),
-    balanceNotes: makeBalanceNotes(input),
-    sourceTemplate: srd
-      ? `${sourceTemplate.name}: ${sourceTemplate.safeSummary} SRD pattern: ${srd}`
-      : `${sourceTemplate.name}: ${sourceTemplate.safeSummary}`,
+    balanceNotes: makeBalanceNotes(input, rolledProperties),
+    sourceTemplate: `${sourceTemplate.name}: ${sourceTemplate.safeSummary}`,
   };
 }

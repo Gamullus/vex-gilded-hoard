@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "generatedAt": null,
+    "apiRoot": "https://www.dnd5eapi.co/api/2014",
+    "source": "D&D 5e SRD API by 5e-bits / dnd5eapi.co",
+    "note": "Run npm run import:srd to replace this placeholder with a local SRD snapshot."
+  },
+  "spells": [],
+  "magicItems": [],
+  "equipment": []
+}
